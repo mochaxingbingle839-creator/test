@@ -37,6 +37,26 @@ def _apply_text_features(text: str) -> tuple[str, list[str]]:
     return text, mentions
 
 
+def _highlight_mentions(text: str, *, me: Optional[str] = None) -> str:
+    """
+    在终端输出里高亮 @提及（ANSI 颜色）。
+    - 默认：青色高亮所有 @xxx
+    - 如果提及到当前用户 me：使用更醒目的黄色背景
+    注：需要终端支持 ANSI 转义序列（Windows Terminal / VS Code 终端一般都支持）。
+    """
+
+    def _repl(m: re.Match[str]) -> str:
+        username = m.group(1)
+        whole = m.group(0)  # 形如 "@alice"
+        # 提及自己：黑字黄底
+        if me and username == me:
+            return f"\x1b[30;43m{whole}\x1b[0m"
+        # 提及他人：青色
+        return f"\x1b[36m{whole}\x1b[0m"
+
+    return re.sub(r"@([A-Za-z0-9_]{3,20})", _repl, text)
+
+
 class Client:
     def __init__(self, host: str, port: int, shared_secret: str) -> None:
         self._host = host
@@ -194,7 +214,9 @@ class Client:
                 and any(isinstance(x, str) and x == self._username for x in mentions)
             ):
                 print(f"[{room}] 提示：你被 @{self._username} 提及（来自 {sender}）")
-            print(f"[{room}] {ts} {sender}: {body}")
+            # 终端“富文本”展示：高亮 @提及
+            body_rich = _highlight_mentions(str(body), me=self._username)
+            print(f"[{room}] {ts} {sender}: {body_rich}")
             return
         if t == "user_joined":
             print(f"[{msg.get('room')}] {msg.get('username')} joined")
