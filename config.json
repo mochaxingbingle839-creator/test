@@ -1,0 +1,8 @@
+{
+  "host": "127.0.0.1",
+  "port": 5050,
+  "shared_secret": "a9f3c1d2e4f6g7h8j9k0L1m2N3p4Q5r6S7t8U9v0wXyZ",
+  "db_path": "data/chat.db",
+  "log_dir": "data/logs",
+  "export_dir": "data/exports"
+}
