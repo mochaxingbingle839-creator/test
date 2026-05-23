@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.pyd
+.Python
+
+# IDE / editor
+.idea/
+.vscode/
+
+# Local config / secrets
+config.json
+
+# Runtime data
+data/chat.db
+data/logs/
+
+# Logs
+*.log
+
+# OS
+Thumbs.db
+Desktop.ini
