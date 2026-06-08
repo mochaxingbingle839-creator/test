@@ -1,4 +1,4 @@
-/# -*- coding: utf-8 -*-
+
 """计算机图形学大作业：增强版 Python/Tkinter 矢量图编译器。"""
 
 import json
@@ -25,7 +25,8 @@ except ImportError:  # pragma: no cover - optional dependency
 CANVAS_W = 1100
 CANVAS_H = 680
 GRID = 24
-APP_VERSION = "2.0"
+APP_VERSION = "2.1"
+SOLID_3D_TYPES = {"rect", "roundrect", "ellipse", "diamond", "terminator", "document", "star", "cloud"}
 
 
 def uid():
@@ -53,6 +54,16 @@ def color_or_none(value):
     if not value or value == "transparent":
         return None
     return value
+
+
+def shade_color(value, factor):
+    color = color_or_none(value) or "#f8fafc"
+    if not isinstance(color, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+        color = "#f8fafc"
+    r = clamp(int(color[1:3], 16) * factor, 0, 255)
+    g = clamp(int(color[3:5], 16) * factor, 0, 255)
+    b = clamp(int(color[5:7], 16) * factor, 0, 255)
+    return f"#{int(r):02x}{int(g):02x}{int(b):02x}"
 
 
 def flatten(points):
@@ -95,6 +106,9 @@ class VectorEditor:
         self.line_width = tk.IntVar(value=2)
         self.font_size = tk.IntVar(value=16)
         self.text_value = tk.StringVar(value="文本")
+        self.depth_3d = tk.IntVar(value=28)
+        self.preview_angle_x = tk.IntVar(value=55)
+        self.preview_angle_y = tk.IntVar(value=-25)
         self.snap_to_grid = tk.BooleanVar(value=True)
         self.show_grid = tk.BooleanVar(value=True)
         self.export_scale = tk.IntVar(value=2)
@@ -198,6 +212,13 @@ class VectorEditor:
         ttk.Button(panel, text="裁剪到画布", command=self.clip_to_canvas).pack(fill=tk.X, pady=2)
 
         ttk.Separator(panel).pack(fill=tk.X, pady=10)
+        ttk.Label(panel, text="3D 立体", font=("Microsoft YaHei UI", 10, "bold")).pack(anchor=tk.W)
+        ttk.Label(panel, text="挤出厚度").pack(anchor=tk.W, pady=(4, 0))
+        ttk.Spinbox(panel, from_=0, to=120, textvariable=self.depth_3d).pack(fill=tk.X)
+        self._button_row(panel, [("应用立体", self.apply_3d_depth), ("取消立体", self.clear_3d_depth)])
+        ttk.Button(panel, text="打开 3D 预览", command=self.open_3d_preview).pack(fill=tk.X, pady=2)
+
+        ttk.Separator(panel).pack(fill=tk.X, pady=10)
         ttk.Label(panel, text="PNG倍率").pack(anchor=tk.W)
         ttk.Spinbox(panel, from_=1, to=4, textvariable=self.export_scale).pack(fill=tk.X)
         ttk.Button(panel, text="载入示例图", command=self.load_sample).pack(fill=tk.X, pady=(8, 2))
@@ -292,6 +313,7 @@ class VectorEditor:
             "stroke": self.stroke.get(),
             "lineWidth": int(self.line_width.get()),
             "fontSize": int(self.font_size.get()),
+            "depth3D": 0,
             "text": labels.get(shape_type, ""),
         }
 
@@ -345,6 +367,8 @@ class VectorEditor:
 
     def draw_shape(self, shape):
         kind = shape["type"]
+        if self.is_3d_shape(shape):
+            self.draw_extruded_shape(shape)
         if kind in ("line", "curve"):
             self.draw_connector(shape)
         elif kind == "freehand":
@@ -379,6 +403,52 @@ class VectorEditor:
             self.draw_capacitor(shape)
         elif kind == "text":
             self.draw_text(shape)
+
+    def is_3d_shape(self, shape):
+        return shape.get("depth3D", 0) > 0 and shape.get("type") in SOLID_3D_TYPES
+
+    def extrusion_offset(self, shape):
+        depth = float(shape.get("depth3D", 0))
+        return depth * 0.72, -depth * 0.46
+
+    def face_points(self, shape):
+        table = {
+            "rect": self.rect_points,
+            "roundrect": self.roundrect_points,
+            "ellipse": self.ellipse_points,
+            "diamond": self.diamond_points,
+            "terminator": self.terminator_points,
+            "document": self.document_points,
+            "star": self.star_points,
+            "cloud": self.cloud_points,
+        }
+        return self.transformed(shape, table[shape["type"]](shape))
+
+    def draw_extruded_shape(self, shape):
+        front = self.face_points(shape)
+        if len(front) < 3:
+            return
+        dx, dy = self.extrusion_offset(shape)
+        back = [(x + dx, y + dy) for x, y in front]
+        fill = shape.get("fill", "#f8fafc")
+        stroke = shape.get("stroke", "#111827")
+        side_fill = shade_color(fill, 0.78)
+        top_fill = shade_color(fill, 1.08)
+        self.canvas.create_polygon(
+            flatten(back),
+            fill=shade_color(fill, 0.9),
+            outline=stroke,
+            width=max(1, int(shape.get("lineWidth", 2) * 0.65)),
+        )
+        for i in range(len(front)):
+            j = (i + 1) % len(front)
+            shade = top_fill if front[i][1] + front[j][1] > back[i][1] + back[j][1] else side_fill
+            self.canvas.create_polygon(
+                flatten([front[i], front[j], back[j], back[i]]),
+                fill=shade,
+                outline=stroke,
+                width=max(1, int(shape.get("lineWidth", 2) * 0.65)),
+            )
 
     def transformed(self, shape, points):
         cx, cy = shape_center(shape)
@@ -867,6 +937,125 @@ class VectorEditor:
         key = "flipX" if axis == "x" else "flipY"
         self.apply_selected(lambda s: s.__setitem__(key, not s.get(key, False)))
 
+    def apply_3d_depth(self):
+        depth = max(0, int(self.depth_3d.get()))
+        solid = [shape for shape in self.selected_shapes() if shape["type"] in SOLID_3D_TYPES]
+        if not solid:
+            messagebox.showinfo("提示", "请先选择可立体化的封闭图元")
+            return
+        for shape in solid:
+            shape["depth3D"] = depth
+        self.push_history("3d")
+        self.render()
+
+    def clear_3d_depth(self):
+        solid = [shape for shape in self.selected_shapes() if shape.get("depth3D", 0) > 0]
+        if not solid:
+            messagebox.showinfo("提示", "请先选择已有 3D 效果的图元")
+            return
+        for shape in solid:
+            shape["depth3D"] = 0
+        self.push_history("3d-clear")
+        self.render()
+
+    def open_3d_preview(self):
+        source = self.selected_shapes() or self.shapes
+        solids = [deepcopy(shape) for shape in source if shape["type"] in SOLID_3D_TYPES]
+        if not solids:
+            messagebox.showinfo("提示", "当前没有可预览的封闭图元")
+            return
+        fallback_depth = max(1, int(self.depth_3d.get()))
+        for shape in solids:
+            if shape.get("depth3D", 0) <= 0:
+                shape["depth3D"] = fallback_depth
+
+        win = tk.Toplevel(self.root)
+        win.title("3D 立体预览")
+        win.geometry("920x700")
+        canvas = tk.Canvas(win, bg="#f8fafc", highlightthickness=1, highlightbackground="#cbd5e1")
+        canvas.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 4))
+
+        controls = ttk.Frame(win, padding=(10, 4, 10, 10))
+        controls.pack(fill=tk.X)
+        ttk.Label(controls, text="X 轴").pack(side=tk.LEFT)
+        x_scale = ttk.Scale(controls, from_=15, to=80, variable=self.preview_angle_x, command=lambda _value: self.render_3d_preview(canvas, solids))
+        x_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
+        ttk.Label(controls, text="Y 轴").pack(side=tk.LEFT)
+        y_scale = ttk.Scale(controls, from_=-80, to=80, variable=self.preview_angle_y, command=lambda _value: self.render_3d_preview(canvas, solids))
+        y_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
+        ttk.Button(controls, text="刷新", command=lambda: self.render_3d_preview(canvas, solids)).pack(side=tk.LEFT, padx=4)
+        win.after(80, lambda: self.render_3d_preview(canvas, solids))
+
+    def render_3d_preview(self, canvas, shapes):
+        canvas.delete("all")
+        width = max(1, canvas.winfo_width())
+        height = max(1, canvas.winfo_height())
+        faces = []
+        for shape in shapes:
+            faces.extend(self.shape_3d_faces(shape))
+        if not faces:
+            return
+
+        ax = math.radians(float(self.preview_angle_x.get()))
+        ay = math.radians(float(self.preview_angle_y.get()))
+        projected_faces = []
+        all_points = []
+        for face in faces:
+            projected = []
+            depths = []
+            for x, y, z in face["points"]:
+                px, py, pz = self.rotate_3d_point(x - CANVAS_W / 2, y - CANVAS_H / 2, z, ax, ay)
+                projected.append((px, py))
+                depths.append(pz)
+                all_points.append((px, py))
+            projected_faces.append({**face, "projected": projected, "z": sum(depths) / len(depths)})
+
+        min_x = min(x for x, _y in all_points)
+        max_x = max(x for x, _y in all_points)
+        min_y = min(y for _x, y in all_points)
+        max_y = max(y for _x, y in all_points)
+        span_x = max(1, max_x - min_x)
+        span_y = max(1, max_y - min_y)
+        scale = min((width - 70) / span_x, (height - 70) / span_y, 1.35)
+        ox = width / 2 - (min_x + span_x / 2) * scale
+        oy = height / 2 - (min_y + span_y / 2) * scale
+
+        canvas.create_rectangle(0, height - 34, width, height, fill="#e2e8f0", outline="")
+        canvas.create_text(14, height - 18, anchor=tk.W, text="拖动下方 X/Y 轴滑块旋转视角", fill="#475569", font=("Microsoft YaHei UI", 10))
+        for face in sorted(projected_faces, key=lambda item: item["z"]):
+            points = [(x * scale + ox, y * scale + oy) for x, y in face["projected"]]
+            canvas.create_polygon(
+                flatten(points),
+                fill=face["fill"],
+                outline=face["stroke"],
+                width=face["lineWidth"],
+            )
+
+    def rotate_3d_point(self, x, y, z, ax, ay):
+        cos_x, sin_x = math.cos(ax), math.sin(ax)
+        y2 = y * cos_x - z * sin_x
+        z2 = y * sin_x + z * cos_x
+        cos_y, sin_y = math.cos(ay), math.sin(ay)
+        x3 = x * cos_y + z2 * sin_y
+        z3 = -x * sin_y + z2 * cos_y
+        return x3, y2, z3
+
+    def shape_3d_faces(self, shape):
+        front2d = self.face_points(shape)
+        depth = float(shape.get("depth3D", 0))
+        fill = shape.get("fill", "#f8fafc")
+        stroke = shape.get("stroke", "#111827")
+        lw = max(1, int(shape.get("lineWidth", 2)))
+        front = [(x, y, depth / 2) for x, y in front2d]
+        back = [(x, y, -depth / 2) for x, y in front2d]
+        faces = [{"points": back, "fill": shade_color(fill, 0.72), "stroke": stroke, "lineWidth": lw}]
+        for i in range(len(front)):
+            j = (i + 1) % len(front)
+            shade = 0.82 if front2d[i][1] < front2d[j][1] else 0.64
+            faces.append({"points": [front[i], front[j], back[j], back[i]], "fill": shade_color(fill, shade), "stroke": stroke, "lineWidth": lw})
+        faces.append({"points": front, "fill": fill if fill != "transparent" else "#ffffff", "stroke": stroke, "lineWidth": lw})
+        return faces
+
     def clip_to_canvas(self):
         def clip(s):
             if s["type"] in ("line", "curve"):
@@ -1199,19 +1388,20 @@ curve key api
         if s.get("text") and s["type"] != "text":
             cx, cy = shape_center(s)
             text = f'<text x="{cx:.2f}" y="{cy:.2f}" text-anchor="middle" dominant-baseline="middle" fill="{stroke}" font-size="{s.get("fontSize", 16)}" font-family="Microsoft YaHei, Arial">{escape(str(s["text"]))}</text>'
+        prefix = self.extrusion_to_svg(s) if self.is_3d_shape(s) else ""
         if s["type"] in ("line", "curve"):
             if s["type"] == "curve":
                 cx, cy = self.curve_control_point(s)
                 d = f'M {s["x"]:.2f} {s["y"]:.2f} Q {cx:.2f} {cy:.2f} {s["x"] + s["w"]:.2f} {s["y"] + s["h"]:.2f}'
             else:
                 d = f'M {s["x"]:.2f} {s["y"]:.2f} L {s["x"] + s["w"]:.2f} {s["y"] + s["h"]:.2f}'
-            return f'<path d="{d}" fill="none" stroke="{stroke}" stroke-width="{lw}" marker-end="url(#arrow)"/>'
+            return f'{prefix}<path d="{d}" fill="none" stroke="{stroke}" stroke-width="{lw}" marker-end="url(#arrow)"/>'
         if s["type"] == "freehand":
             pts = " ".join(f'{p["x"]:.2f},{p["y"]:.2f}' for p in s.get("points", []))
-            return f'<polyline points="{pts}" fill="none" stroke="{stroke}" stroke-width="{lw}" stroke-linecap="round" stroke-linejoin="round"/>'
+            return f'{prefix}<polyline points="{pts}" fill="none" stroke="{stroke}" stroke-width="{lw}" stroke-linecap="round" stroke-linejoin="round"/>'
         if s["type"] == "resistor":
             pts = " ".join(f"{x:.2f},{y:.2f}" for x, y in self.transformed(s, self.resistor_points(s)))
-            return f'<polyline points="{pts}" fill="none" stroke="{stroke}" stroke-width="{lw}" stroke-linecap="round" stroke-linejoin="round"/>'
+            return f'{prefix}<polyline points="{pts}" fill="none" stroke="{stroke}" stroke-width="{lw}" stroke-linecap="round" stroke-linejoin="round"/>'
         if s["type"] == "capacitor":
             x, y, w, h = s["x"], s["y"], s["w"], s["h"]
             cy = y + h / 2
@@ -1226,12 +1416,31 @@ curve key api
             ]:
                 (x1, y1), (x2, y2) = self.transformed(s, line)
                 parts.append(f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" stroke="{stroke}" stroke-width="{lw}" stroke-linecap="round"/>')
-            return "\n".join(parts)
+            return prefix + "\n".join(parts)
         if s["type"] == "text":
-            return f'<text x="{s["x"]:.2f}" y="{s["y"]:.2f}" fill="{stroke}" font-size="{s.get("fontSize", 16)}" font-family="Microsoft YaHei, Arial" transform="{transform}">{escape(str(s.get("text", "文本")))}</text>'
+            return f'{prefix}<text x="{s["x"]:.2f}" y="{s["y"]:.2f}" fill="{stroke}" font-size="{s.get("fontSize", 16)}" font-family="Microsoft YaHei, Arial" transform="{transform}">{escape(str(s.get("text", "文本")))}</text>'
         points = self.points_for_svg(s)
         point_text = " ".join(f"{x:.2f},{y:.2f}" for x, y in points)
-        return f'<g transform="{transform}"><polygon points="{point_text}" fill="{fill}" stroke="{stroke}" stroke-width="{lw}"/>{text}</g>'
+        return f'{prefix}<g transform="{transform}"><polygon points="{point_text}" fill="{fill}" stroke="{stroke}" stroke-width="{lw}"/>{text}</g>'
+
+    def extrusion_to_svg(self, s):
+        front = self.face_points(s)
+        if len(front) < 3:
+            return ""
+        dx, dy = self.extrusion_offset(s)
+        back = [(x + dx, y + dy) for x, y in front]
+        fill = s.get("fill", "#f8fafc")
+        stroke = escape(str(s.get("stroke", "#111827")))
+        lw = max(1, int(s.get("lineWidth", 2) * 0.65))
+        parts = []
+        back_points = " ".join(f"{x:.2f},{y:.2f}" for x, y in back)
+        parts.append(f'<polygon points="{back_points}" fill="{escape(shade_color(fill, 0.9))}" stroke="{stroke}" stroke-width="{lw}"/>')
+        for i in range(len(front)):
+            j = (i + 1) % len(front)
+            shade = 1.08 if front[i][1] + front[j][1] > back[i][1] + back[j][1] else 0.78
+            pts = " ".join(f"{x:.2f},{y:.2f}" for x, y in [front[i], front[j], back[j], back[i]])
+            parts.append(f'<polygon points="{pts}" fill="{escape(shade_color(fill, shade))}" stroke="{stroke}" stroke-width="{lw}"/>')
+        return "\n".join(parts) + "\n"
 
     def svg_transform(self, s):
         cx, cy = shape_center(s)
@@ -1290,6 +1499,8 @@ curve key api
         stroke = color_or_none(s.get("stroke")) or "#111827"
         fill = color_or_none(s.get("fill"))
         width = max(1, int(s.get("lineWidth", 2) * scale))
+        if self.is_3d_shape(s):
+            self.draw_extrusion_pillow(draw, s, scale)
         if s["type"] in ("line", "curve"):
             if s["type"] == "curve":
                 pts = self.curve_points(s, 32)
@@ -1323,6 +1534,26 @@ curve key api
             closed = pts + [pts[0]]
             draw.line([(x * scale, y * scale) for x, y in closed], fill=stroke, width=width)
         self.draw_text_pillow(draw, s, scale)
+
+    def draw_extrusion_pillow(self, draw, s, scale):
+        front = self.face_points(s)
+        if len(front) < 3:
+            return
+        dx, dy = self.extrusion_offset(s)
+        back = [(x + dx, y + dy) for x, y in front]
+        fill = s.get("fill", "#f8fafc")
+        stroke = color_or_none(s.get("stroke")) or "#111827"
+        width = max(1, int(s.get("lineWidth", 2) * scale * 0.65))
+
+        draw.polygon([(x * scale, y * scale) for x, y in back], fill=shade_color(fill, 0.9), outline=stroke)
+        for i in range(len(front)):
+            j = (i + 1) % len(front)
+            shade = 1.08 if front[i][1] + front[j][1] > back[i][1] + back[j][1] else 0.78
+            face = [front[i], front[j], back[j], back[i]]
+            scaled = [(x * scale, y * scale) for x, y in face]
+            draw.polygon(scaled, fill=shade_color(fill, shade), outline=stroke)
+            if width > 1:
+                draw.line(scaled + [scaled[0]], fill=stroke, width=width)
 
     def draw_arrow_pillow(self, draw, start, end, color, scale):
         x1, y1 = start
@@ -1362,14 +1593,14 @@ curve key api
             {**self.shape_base("terminator", 90, 75, 135, 58), "text": "开始", "fill": "#e8f7f3", "stroke": "#0f766e"},
             {**self.shape_base("rect", 90, 175, 135, 72), "text": "读取数据", "fill": "#f8fafc", "stroke": "#334155"},
             {**self.shape_base("diamond", 82, 305, 150, 88), "text": "是否有效", "fill": "#fff7ed", "stroke": "#c2410c"},
-            {**self.shape_base("document", 390, 185, 165, 92), "text": "生成报告", "fill": "#eff6ff", "stroke": "#1d4ed8"},
+            {**self.shape_base("document", 390, 185, 165, 92), "text": "生成报告", "fill": "#eff6ff", "stroke": "#1d4ed8", "depth3D": 24},
             {**self.shape_base("terminator", 405, 340, 135, 58), "text": "结束", "fill": "#f0fdf4", "stroke": "#15803d"},
             {**self.shape_base("line", 158, 133, 0, 42), "stroke": "#475569"},
             {**self.shape_base("line", 158, 247, 0, 58), "stroke": "#475569"},
             {**self.shape_base("curve", 232, 350, 158, -112), "stroke": "#475569", "control": {"x": 315, "y": 205}},
             {**self.shape_base("line", 472, 277, 0, 63), "stroke": "#475569"},
-            {**self.shape_base("star", 712, 108, 104, 104), "text": "重点", "fill": "#fef3c7", "stroke": "#b45309"},
-            {**self.shape_base("cloud", 680, 260, 190, 105), "text": "云端服务", "fill": "#ecfeff", "stroke": "#0891b2"},
+            {**self.shape_base("star", 712, 108, 104, 104), "text": "重点", "fill": "#fef3c7", "stroke": "#b45309", "depth3D": 34},
+            {**self.shape_base("cloud", 680, 260, 190, 105), "text": "云端服务", "fill": "#ecfeff", "stroke": "#0891b2", "depth3D": 28},
             {**self.shape_base("resistor", 710, 430, 170, 60), "stroke": "#7c2d12"},
             {**self.shape_base("capacitor", 720, 545, 140, 72), "stroke": "#7c2d12"},
             {**self.shape_base("text", 675, 70, 260, 32), "text": "新增图元与编译示例", "stroke": "#172033"},
@@ -1400,6 +1631,7 @@ curve key api
         self.stroke.set(shape.get("stroke", self.stroke.get()))
         self.line_width.set(int(shape.get("lineWidth", self.line_width.get())))
         self.font_size.set(int(shape.get("fontSize", self.font_size.get())))
+        self.depth_3d.set(int(shape.get("depth3D", self.depth_3d.get())))
         self.text_value.set(shape.get("text", ""))
 
     def update_layers(self):
@@ -1438,7 +1670,8 @@ curve key api
             return
         self.status.config(
             text=f"{shape['type']}  x:{int(shape['x'])} y:{int(shape['y'])} "
-            f"w:{int(shape['w'])} h:{int(shape['h'])} 旋转:{shape.get('rotation', 0)}°"
+            f"w:{int(shape['w'])} h:{int(shape['h'])} 旋转:{shape.get('rotation', 0)}° "
+            f"3D:{int(shape.get('depth3D', 0))}"
         )
 
 

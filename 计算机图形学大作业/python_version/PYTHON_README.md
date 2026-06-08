@@ -19,6 +19,7 @@ python vector_editor.py
 - 支持基于 Pillow 的 1x-4x 高清 PNG 导出，不再依赖 Windows 截图接口。
 - 支持图形分析：统计图元数量、覆盖率、平均连线长度和类型分布。
 - 支持自动流程图排版、居中、对齐、旋转、缩放、镜像、裁剪等编辑操作。
+- 支持 3D 立体功能：可给封闭图元设置挤出厚度，在画布、SVG、PNG 中显示立体效果，并可打开独立 3D 预览窗口旋转查看。
 
 ## DSL 示例
 
@@ -52,4 +53,4 @@ curve 起点名称 终点名称
 
 ## 数据格式
 
-JSON 文件仍保存为可继续编辑的矢量数据，每个图元包含 `type`、`x`、`y`、`w`、`h`、`rotation`、`flipX`、`flipY`、`fill`、`stroke`、`lineWidth`、`fontSize`、`text` 等字段。曲线会额外保存 `control` 控制点，自由曲线会额外保存 `points` 点列。
+JSON 文件仍保存为可继续编辑的矢量数据，每个图元包含 `type`、`x`、`y`、`w`、`h`、`rotation`、`flipX`、`flipY`、`fill`、`stroke`、`lineWidth`、`fontSize`、`text`、`depth3D` 等字段。曲线会额外保存 `control` 控制点，自由曲线会额外保存 `points` 点列。
